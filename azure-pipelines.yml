@@ -85,17 +85,17 @@ stages:
                 $hostSuffix=$(azds show-context -o json | ConvertFrom-Json).hostSuffix
                 echo "##vso[task.setvariable variable=HostSuffix]$hostSuffix"
 
-          - task: KubernetesManifest@0
-            displayName: Bake manifests
-            name: bake
-            inputs:
-              action: bake
-              helmChart: $(Pipeline.Workspace)/charts/devspaces-v0.0.1.tgz
-              overrides: |
-                image.repository:$(containerRegistry)/$(imageRepository)
-                service.port:80 
-                ingress.enabled:true
-                ingress.hostname:app.$(HostSuffix)
+#          - task: KubernetesManifest@0
+#            displayName: Bake manifests
+#            name: bake
+#            inputs:
+#              action: bake
+#              helmChart: $(Pipeline.Workspace)/charts/devspaces-v0.0.1.tgz
+#              overrides: |
+#                image.repository:$(containerRegistry)/$(imageRepository)
+#                service.port:80 
+#                ingress.enabled:true
+#                ingress.hostname:app.$(HostSuffix)
               
           - task: KubernetesManifest@0
             displayName: Deploy to Kubernetes cluster
