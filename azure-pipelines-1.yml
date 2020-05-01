@@ -1,0 +1,117 @@
+# Deploy to Azure Kubernetes Service
+# Build and push image to Azure Container Registry; Deploy to Azure Kubernetes Service
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+trigger: none
+
+variables:
+  dockerRegistryServiceConnection: 'd239398a-fb80-44a3-9878-b97b0f733688'
+  imageRepository: 'azure-pipelines-canary-k8s'
+  containerRegistry: 'ajacr1.azurecr.io'
+  imagePullSecret: 'azure-pipelines-canary-k8s'
+  grafanaToken: 'YWRtaW46cHJvbS1vcGVyYXRvcg=='
+  vmImageName: 'ubuntu-latest'
+
+resources:
+ pipelines:
+   - pipeline: ImageCI
+     source: CanaryBuild  
+     branch: master
+     trigger:
+      branches:
+       include:
+         - master    
+
+stages:
+- stage: Production
+  displayName: Production Canary Deployment
+  jobs: 
+  - deployment: CanaryDeployment
+    displayName: Deploy Canary
+    pool: 
+      vmImage: $(vmImageName)
+    environment: 'azurepipelinescanaryk8s-1930.aca-demo'
+    strategy:
+      canary:
+        increments: [25]
+        deploy:
+          steps: 
+          - checkout: self         
+          - task: KubernetesManifest@0
+            displayName: Create imagePullSecret
+            inputs:
+              action: createSecret
+              namespace: 'aca-demo'
+              secretName: $(imagePullSecret)
+              dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
+          - task: KubernetesManifest@0
+            inputs:
+              action: $(strategy.action)
+           #   kubernetesServiceConnection: ''
+              namespace: 'aca-demo'
+              strategy: $(strategy.name)
+              percentage: $(strategy.increment)
+              manifests: |
+                  $(Build.SourcesDirectory)/manifests/deployment.yml
+                  $(Build.SourcesDirectory)/manifests/service.yml
+              imagePullSecrets: $(imagePullSecret)
+              containers: |
+                $(containerRegistry)/$(imageRepository):master_$(resources.pipeline.ImageCI.runID)
+              
+        postRouteTraffic:
+          pool: server
+          steps:
+            - task: AutomatedAnalysis@1
+              inputs:
+                connectedServiceNameARM: 'rmdev'
+                ResourceGroupName: 'aj-rg'
+                containerGroupName: 'aj-cg'
+                location: 'southindia'
+                logLevel: 'Debug'
+                provider: 'Prometheus'
+                endpointUrl: 'http://20.44.35.172:9090'
+                expressionTemplates: 'rate(requests_total{custom_status="good", $label=~"$value" }[1m])'
+                templateSubstitutions: 'pod sampleapp-baseline-.* sampleapp-canary-.*'
+                areMetricsCritical: 'false'
+                analysisType: 'realtime'
+                windowType: 'sliding'
+                lifetime: '1m'
+                interval: '30s'
+                step: '10s'
+                preprocessor: 'ksigma'
+                nanStrategy: 'remove'
+                classifier: 'mannWhitney'
+                groupWeights: '1'
+                direction: 'either'
+                allowedIncrease: '20'
+                allowedDecrease: '0.9'
+                marginalThreshold: '0.2'
+                passThreshold: '0.6'
+        on:
+          failure:
+            steps:            
+            - script: echo deployment failed...
+            - checkout: self
+            - task: KubernetesManifest@0
+              inputs:
+                action: 'reject'
+               # kubernetesServiceConnection: ''
+                namespace: 'aca-demo'
+                strategy: $(strategy.name)
+                manifests: |
+                  $(Build.SourcesDirectory)/manifests/deployment.yml
+                  $(Build.SourcesDirectory)/manifests/service.yml
+          success:
+            steps:
+            - download: none
+            - script: echo deployment succeeded...   
+            - task: Bash@3
+              inputs:
+                targetType: 'inline'
+                script: |
+                  curl --header "Content-Type: application/json" \
+                                    --header "Authorization: Basic $(grafanaToken)" \
+                                    --request POST \
+                                    --data '{"what": "Event - deployment","tags": ["canary", "promote", "$(System.TeamFoundationCollectionUri)/$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"],"data": "Canary promoted to production"}' \
+                                    http://20.44.37.117/api/annotations/graphite
+      
